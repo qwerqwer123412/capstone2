@@ -7,6 +7,7 @@ Heterogeneous WNMS Dashboard — Streaming Edition (Full Code with AP 상세 시
 """
 
 import dash
+import plotly
 import torch
 from dash import Dash, dcc, html, dash_table
 from dash.dependencies import Input, Output, State
@@ -74,19 +75,49 @@ def render_overview_tab():
     up_ap    = total_ap
     down_ap  = 0  # 실제 UP/DOWN 데이터가 없으므로 모두 UP으로 가정
 
-    # ① AP별 클라이언트 수 집계
+    # ──────────────────────────────────────────────────────────────────────────
+    # ① AP별 클라이언트 수 집계 (기존)
+    # ──────────────────────────────────────────────────────────────────────────
     ap_clients = {ap: 0 for ap in AP_NAMES}
     if ('AP', 'ap_station', 'Station') in g_last.edge_types:
         ei_as = g_last[('AP', 'ap_station', 'Station')].edge_index
         for k in range(ei_as.size(1)):
             ap_clients[IDX2AP_NAME[ei_as[0, k].item()]] += 1
 
-    ap_top10 = sorted(
+    ap_top10_clients = sorted(
         [{"name": k, "clients": v} for k, v in ap_clients.items()],
         key=lambda x: x["clients"], reverse=True
     )[:10]
 
-    # ② Station별 연결 AP 수 집계
+    # ──────────────────────────────────────────────────────────────────────────
+    # ② AP별 RX/​TX 바이트 집계 (추가)
+    # ──────────────────────────────────────────────────────────────────────────
+    #※ g_last["AP"].x의 컬럼 인덱스를 실제 RX/TX 위치에 맞춰서 수정하세요.
+    rx_idx = 1  # 예시: 0번째가 RX 바이트
+    tx_idx = 2  # 예시: 1번째가 TX 바이트
+
+    ap_rx = {
+        ap: g_last["AP"].x[i, rx_idx].item()
+        for i, ap in enumerate(AP_NAMES)
+    }
+    ap_tx = {
+        ap: g_last["AP"].x[i, tx_idx].item()
+        for i, ap in enumerate(AP_NAMES)
+    }
+
+    ap_top10_rx = sorted(
+        [{"name": k, "rx": v} for k, v in ap_rx.items()],
+        key=lambda x: x["rx"], reverse=True
+    )[:10]
+
+    ap_top10_tx = sorted(
+        [{"name": k, "tx": v} for k, v in ap_tx.items()],
+        key=lambda x: x["tx"], reverse=True
+    )[:10]
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # ③ Station별 연결 AP 수 집계 (기존)
+    # ──────────────────────────────────────────────────────────────────────────
     sta_cnt = {ip: 0 for ip in g_last.station_ip2idx.keys()}
     if ('AP', 'ap_station', 'Station') in g_last.edge_types:
         ei_as = g_last[('AP', 'ap_station', 'Station')].edge_index
@@ -102,17 +133,37 @@ def render_overview_tab():
 
     total_sta = g_last["Station"].x.size(0)
 
-    # 테이블 생성 헬퍼 함수
-    def simple_table(headers, rows):
-        return html.Table(
-            [html.Thead(html.Tr([html.Th(h) for h in headers]))] +
-            [html.Tr([html.Td(c) for c in row]) for row in rows],
-            style={"width": "100%", "border": "1px solid #ccc", "borderCollapse": "collapse"},
+    # ──────────────────────────────────────────────────────────────────────────
+    # ④ 테이블 생성 헬퍼 함수 (기존)
+    # ──────────────────────────────────────────────────────────────────────────
+    def simple_table(headers, rows, row_colors=None):
+        table_rows = []
+
+        # 헤더
+        table_rows.append(
+            html.Tr([html.Th(col) for col in headers])
         )
 
+        # 데이터 행
+        for row in rows:
+            ap_name = row[0]
+            row_style = {"backgroundColor": row_colors.get(ap_name, "white")} if row_colors else {}
+            table_rows.append(
+                html.Tr([html.Td(cell) for cell in row], style=row_style)
+            )
+
+        return html.Table(table_rows, style={"width": "100%", "borderCollapse": "collapse"})
+
+    # 색상: 10개 + 기타용 회색
+    colors = plotly.colors.qualitative.Plotly[:10] + ["#d9d9d9"]
+    top10_ap_names = [d["name"] for d in ap_top10_clients]
+    ap_color_map = {name: colors[i] for i, name in enumerate(top10_ap_names)}
+    # ──────────────────────────────────────────────────────────────────────────
+    # ⑤ 레이아웃 구성
+    # ──────────────────────────────────────────────────────────────────────────
     return html.Div(
         [
-            # Row 1: AP Up/Down Pie | AP Top10 | Station Top10 | Total Stations
+            # Row 1: AP Up/Down Pie | Total Stations 카드
             html.Div(
                 style={"display": "flex", "gap": 16},
                 children=[
@@ -121,33 +172,81 @@ def render_overview_tab():
                         dcc.Graph(
                             figure=go.Figure(
                                 data=[go.Pie(
-                                    labels=["UP", "DOWN"],
-                                    values=[up_ap, down_ap],
-                                    hole=0.5,
-                                    marker={"colors": ["#1890ff", "#f5222d"]},
+                                    labels=[d["name"] for d in ap_top10_clients] + ["기타"],
+                                    values=[d["clients"] for d in ap_top10_clients] + [
+                                        sum(ap_clients.values()) - sum(d["clients"] for d in ap_top10_clients)],
+                                    hole=0.4,
+                                    marker={"colors": colors},
                                 )],
                                 layout=go.Layout(
-                                    annotations=[{"text": f"Total<br>{total_ap}", "showarrow": False}],
-                                    margin={"l": 10, "r": 10, "t": 10, "b": 10},
+                                    title="Top 10 AP Client 비율",
+                                    margin={"l": 10, "r": 10, "t": 30, "b": 10},
+                                    height=400,  # ✅ 높이 조절
+                                    width=400,  # ✅ 너비 조절 (optional)
                                 ),
                             ),
                             config={"displayModeBar": False},
-                            style={"height": "250px"},
+                            style={"height": "400px"},  # ✅ Div 높이도 일치시킴
                         ),
-                        style={"width": "24%"},
+                        style={"width": "30%"},  # ✅ 너비도 넉넉히 조절
                     ),
-                    # 2) AP Top 10 Table
+                    # 2) Total Stations 카드
+                    html.Div(
+                        [
+                            html.Div("Total Stations", style={"fontWeight": "bold"}),
+                            html.Div(str(total_sta), style={"fontSize": "32px", "color": "#52c41a"}),
+                        ],
+                        style={"width": "24%", "textAlign": "center"},
+                    ),
+                ],
+            ),
+
+            # Row 2: AP Top 10 테이블 (Clients, RX, TX), Station Top10 테이블
+            html.Div(
+                style={"display": "flex", "gap": 16, "marginTop": 32,},
+                children=[
+                    # A) AP Top 10 (Clients)
                     html.Div(
                         [
                             html.Div("AP Top 10 (Clients)", style={"fontWeight": "bold", "marginBottom": 8}),
                             simple_table(
                                 ["AP 이름", "클라이언트 수"],
-                                [(d["name"], d["clients"]) for d in ap_top10]
+                                [(d["name"], d["clients"]) for d in ap_top10_clients],
+
                             ),
                         ],
                         style={"width": "24%"},
                     ),
-                    # 3) Station Top 10 Table
+
+                    # B) AP Top 10 (RX Bytes)
+                    html.Div(
+                        [
+                            html.Div("AP Top 10 (RX Bytes)", style={"fontWeight": "bold", "marginBottom": 8}),
+                            simple_table(
+                                ["AP 이름", "RX 바이트"],
+                                [(d["name"], f"{d['rx']:,}") for d in ap_top10_rx],
+
+
+                            ),
+                        ],
+                        style={"width": "24%"},
+                    ),
+
+                    # C) AP Top 10 (TX Bytes)
+                    html.Div(
+                        [
+                            html.Div("AP Top 10 (TX Bytes)", style={"fontWeight": "bold", "marginBottom": 8}),
+                            simple_table(
+                                ["AP 이름", "TX 바이트"],
+                                [(d["name"], f"{d['tx']:,}") for d in ap_top10_tx],
+
+
+                            ),
+                        ],
+                        style={"width": "24%"},
+                    ),
+
+                    # D) Station Top 10 (연결 AP 수)
                     html.Div(
                         [
                             html.Div("Station Top 10 (연결 AP 수)", style={"fontWeight": "bold", "marginBottom": 8}),
@@ -158,17 +257,10 @@ def render_overview_tab():
                         ],
                         style={"width": "24%"},
                     ),
-                    # 4) Total Stations Card
-                    html.Div(
-                        [
-                            html.Div("Total Stations", style={"fontWeight": "bold"}),
-                            html.Div(str(total_sta), style={"fontSize": "32px", "color": "#52c41a"}),
-                        ],
-                        style={"width": "24%", "textAlign": "center"},
-                    ),
                 ],
             ),
-            # Row 2: AP별 Client Count Bar Chart
+
+            # Row 3: AP별 Client Count Bar Chart (기존)
             html.Div(
                 style={"marginTop": 32},
                 children=[
@@ -176,13 +268,14 @@ def render_overview_tab():
                     dcc.Graph(
                         figure=go.Figure(
                             data=[go.Bar(
-                                x=[d["name"] for d in ap_top10],
-                                y=[d["clients"] for d in ap_top10],
-                                marker={"color": "#1890ff"},
+                                x=[d["name"] for d in ap_top10_clients],
+                                y=[d["clients"] for d in ap_top10_clients],
+                                marker={"color": colors},
+
                             )],
                             layout=go.Layout(
-                                xaxis={"title": "AP 이름"},
-                                yaxis={"title": "클라이언트 수"},
+                                xaxis={"title": "AP Name"},
+                                yaxis={"title": "client Number"},
                                 margin={"l": 40, "r": 10, "t": 20, "b": 40},
                             ),
                         ),
@@ -191,8 +284,65 @@ def render_overview_tab():
                     ),
                 ],
             ),
+
+            # Row 4: AP별 RX/​TX Bar Chart (추가)
+            html.Div(
+                style={"marginTop": 32, "display": "flex", "gap": 16},
+                children=[
+                    # AP Top 10 (RX Bytes) Bar Chart
+                    html.Div(
+                        [
+                            html.Div("AP별 RX Bytes (Top 10)", style={"fontWeight": "bold", "marginBottom": 8}),
+                            dcc.Graph(
+                                figure=go.Figure(
+                                    data=[go.Bar(
+                                        x=[d["name"] for d in ap_top10_rx],
+                                        y=[d["rx"] for d in ap_top10_rx],
+                                        marker={"color": colors},
+
+                                    )],
+                                    layout=go.Layout(
+                                        xaxis={"title": "AP Name"},
+                                        yaxis={"title": "RX bytes"},
+                                        margin={"l": 40, "r": 10, "t": 20, "b": 40},
+                                    ),
+                                ),
+                                config={"displayModeBar": False},
+                                style={"height": "300px"},
+                            ),
+                        ],
+                        style={"width": "49%"},
+                    ),
+
+                    # AP Top 10 (TX Bytes) Bar Chart
+                    html.Div(
+                        [
+                            html.Div("AP별 TX Bytes (Top 10)", style={"fontWeight": "bold", "marginBottom": 8}),
+                            dcc.Graph(
+                                figure=go.Figure(
+                                    data=[go.Bar(
+                                        x=[d["name"] for d in ap_top10_tx],
+                                        y=[d["tx"] for d in ap_top10_tx],
+                                        marker={"color": colors},
+
+                                    )],
+                                    layout=go.Layout(
+                                        xaxis={"title": "AP Name"},
+                                        yaxis={"title": "TX bytes"},
+                                        margin={"l": 40, "r": 10, "t": 20, "b": 40},
+                                    ),
+                                ),
+                                config={"displayModeBar": False},
+                                style={"height": "300px"},
+                            ),
+                        ],
+                        style={"width": "49%"},
+                    ),
+                ],
+            ),
         ]
     )
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 3-B. AP 리스트 탭 콘텐츠 (Streaming Mini Chart 포함)
@@ -613,4 +763,4 @@ def station_detail(rows, _):
 # 7. 앱 실행
 # ──────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=True, port=8051)
