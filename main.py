@@ -8,7 +8,6 @@ Heterogeneous WNMS Dashboard — Streaming Edition (Full Code with AP 상세 시
 # 필요
 # pandas, PyG
 import dash
-import plotly
 import pandas as pd
 import torch
 from dash import Dash, dcc, html, dash_table
@@ -20,7 +19,7 @@ import plotly.graph_objects as go
 # 1. 데이터 로드 & 전역 메타 정보
 # ──────────────────────────────────────────────────────────────────────────────
 PATH = (
-    "/home/nsl/WiFi_Network_ML_minjun/WiFi_Network_ML/data/"
+    "./data/"
     "hetero_graph_dataset_weekday_6to16.pt"
 )
 dataset        = torch.load(PATH, weights_only=False)  # HeteroData 객체 리스트 불러오기
@@ -34,7 +33,7 @@ AP_NAMES       = [IDX2AP_NAME[i] for i in range(len(AP_NAME2IDX))]  # ["AP01", "
 
 STATION_IP2IDX = first.station_ip2idx                               # {"192.168.0.10":0, ...}
 IDX2STATION_IP = {i: ip for ip, i in STATION_IP2IDX.items()}        # {0:"192.168.0.10", ...}
-colors = plotly.colors.qualitative.Plotly[:10] + ["#d9d9d9"]
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 2. Dash 앱 초기화 & 레이아웃
 # ──────────────────────────────────────────────────────────────────────────────
@@ -44,8 +43,7 @@ server = app.server
 app.layout = html.Div(
     [
         # 1) Overview/AP 상세/Station용 인터벌 (90초 주기)
-        dcc.Interval(id="global-interval", interval=5_000, n_intervals=0),
-        dcc.Interval(id="overview-interval", interval=5000, n_intervals=0),
+        dcc.Interval(id="global-interval", interval=1_000, n_intervals=0),
         # 2) AP 미니 차트 스트리밍용 인터벌 (1초 주기)
         dcc.Interval(id="stream-interval", interval=1_000, n_intervals=0),
 
@@ -73,146 +71,130 @@ app.layout = html.Div(
 # 3-A. Overview 탭 콘텐츠 함수
 # ──────────────────────────────────────────────────────────────────────────────
 def render_overview_tab():
-    """
-    Overview 탭에서는 그래프를 미리 빈 상태(id만 지정)로 만들고,
-    실제 데이터는 아래 update_overview_graphs 콜백에서 채워줍니다.
-    """
-    # ① 약간의 카드 레이아웃 스타일
-    card_style = {
-        "backgroundColor": "#ffffff",
-        "padding": "16px",
-        "borderRadius": "8px",
-        "boxShadow": "0 1px 3px rgba(0,0,0,0.1)",
-        "marginBottom": "16px",
-    }
+    g_last   = dataset[-1]
+    total_ap = len(AP_NAMES)
+    up_ap    = total_ap
+    down_ap  = 0  # 실제 UP/DOWN 데이터가 없으므로 모두 UP으로 가정
+
+    # ① AP별 클라이언트 수 집계
+    ap_clients = {ap: 0 for ap in AP_NAMES}
+    if ('AP', 'ap_station', 'Station') in g_last.edge_types:
+        ei_as = g_last[('AP', 'ap_station', 'Station')].edge_index
+        for k in range(ei_as.size(1)):
+            ap_clients[IDX2AP_NAME[ei_as[0, k].item()]] += 1
+
+    ap_top10 = sorted(
+        [{"name": k, "clients": v} for k, v in ap_clients.items()],
+        key=lambda x: x["clients"], reverse=True
+    )[:10]
+
+    # ② Station별 연결 AP 수 집계
+    sta_cnt = {ip: 0 for ip in g_last.station_ip2idx.keys()}
+    if ('AP', 'ap_station', 'Station') in g_last.edge_types:
+        ei_as = g_last[('AP', 'ap_station', 'Station')].edge_index
+        for k in range(ei_as.size(1)):
+            sta_ip = IDX2STATION_IP.get(ei_as[1, k].item())
+            if sta_ip in sta_cnt:
+                sta_cnt[sta_ip] += 1
+
+    sta_top10 = sorted(
+        [{"ip": k, "connections": v} for k, v in sta_cnt.items()],
+        key=lambda x: x["connections"], reverse=True
+    )[:10]
+
+    total_sta = g_last["Station"].x.size(0)
+
+    # 테이블 생성 헬퍼 함수
+    def simple_table(headers, rows):
+        return html.Table(
+            [html.Thead(html.Tr([html.Th(h) for h in headers]))] +
+            [html.Tr([html.Td(c) for c in row]) for row in rows],
+            style={"width": "100%", "border": "1px solid #ccc", "borderCollapse": "collapse"},
+        )
 
     return html.Div(
-        style={"padding": "24px", "backgroundColor": "#f5f7fa"},
-        children=[
-            # --- Row 1: Pie + Total AP, Total Stations 카드 ---
+        [
+            # Row 1: AP Up/Down Pie | AP Top10 | Station Top10 | Total Stations
             html.Div(
-                style={"display": "flex", "gap": "16px", "marginBottom": "16px"},
+                style={"display": "flex", "gap": 16},
                 children=[
-                    # 1) Pie 차트 카드를 빈 상태로 배치 (id="overview-pie")
+                    # 1) AP Up/Down Pie Chart
                     html.Div(
-                        style={**card_style, "flex": "1"},
-                        children=[
-                            html.Div(
-                                "Top 10 AP Client 비율",
-                                style={"fontWeight": "bold", "fontSize": "16px", "marginBottom": "12px"},
+                        dcc.Graph(
+                            figure=go.Figure(
+                                data=[go.Pie(
+                                    labels=["UP", "DOWN"],
+                                    values=[up_ap, down_ap],
+                                    hole=0.5,
+                                    marker={"colors": ["#1890ff", "#f5222d"]},
+                                )],
+                                layout=go.Layout(
+                                    annotations=[{"text": f"Total<br>{total_ap}", "showarrow": False}],
+                                    margin={"l": 10, "r": 10, "t": 10, "b": 10},
+                                ),
                             ),
-                            dcc.Graph(
-                                id="overview-pie",
-                                config={"displayModeBar": False},
-                                style={"height": "320px"},
-                                figure=go.Figure(),  # 빈 Figure로 초기화
-                            ),
-                        ],
+                            config={"displayModeBar": False},
+                            style={"height": "250px"},
+                        ),
+                        style={"width": "24%"},
                     ),
-
-                    # 2) Total AP 카드 (value는 콜백에서 채워줌)
+                    # 2) AP Top 10 Table
                     html.Div(
-                        style={**card_style, "flex": "0 0 200px", "textAlign": "center"},
-                        children=[
-                            html.Div(
-                                "Total AP",
-                                style={"fontWeight": "bold", "fontSize": "16px", "marginBottom": "8px"},
-                            ),
-                            html.Div(
-                                "-",  # 텍스트 콜백으로 채워질 예정
-                                id="overview-total-ap",
-                                style={"fontSize": "40px", "color": "#1890ff"},
-                            ),
-                            html.Div(
-                                "-",  # 콜백에서 “UP: X / DOWN: Y” 형태로 업데이트
-                                id="overview-ap-status",
-                                style={"marginTop": "4px", "color": "#888"},
+                        [
+                            html.Div("AP Top 10 (Clients)", style={"fontWeight": "bold", "marginBottom": 8}),
+                            simple_table(
+                                ["AP 이름", "클라이언트 수"],
+                                [(d["name"], d["clients"]) for d in ap_top10]
                             ),
                         ],
+                        style={"width": "24%"},
                     ),
-
-                    # 3) Total Stations 카드 (value는 콜백에서 채워줌)
+                    # 3) Station Top 10 Table
                     html.Div(
-                        style={**card_style, "flex": "0 0 200px", "textAlign": "center"},
-                        children=[
-                            html.Div(
-                                "Total Stations",
-                                style={"fontWeight": "bold", "fontSize": "16px", "marginBottom": "8px"},
-                            ),
-                            html.Div(
-                                "-",  # 콜백에서 채워짐
-                                id="overview-total-sta",
-                                style={"fontSize": "40px", "color": "#52c41a"},
-                            ),
-                            html.Div(
-                                "-",  # 콜백에서 “Top10 연결: Z”로 채워짐
-                                id="overview-sta-top10",
-                                style={"marginTop": "4px", "color": "#888"},
+                        [
+                            html.Div("Station Top 10 (연결 AP 수)", style={"fontWeight": "bold", "marginBottom": 8}),
+                            simple_table(
+                                ["Station IP", "연결 AP 수"],
+                                [(d["ip"], d["connections"]) for d in sta_top10]
                             ),
                         ],
+                        style={"width": "24%"},
+                    ),
+                    # 4) Total Stations Card
+                    html.Div(
+                        [
+                            html.Div("Total Stations", style={"fontWeight": "bold"}),
+                            html.Div(str(total_sta), style={"fontSize": "32px", "color": "#52c41a"}),
+                        ],
+                        style={"width": "24%", "textAlign": "center"},
                     ),
                 ],
             ),
-
-            # --- Row 2: Bar 차트 세 개를 빈 상태로 배치 ---
+            # Row 2: AP별 Client Count Bar Chart
             html.Div(
-                style={"display": "flex", "gap": "16px", "marginBottom": "16px"},
+                style={"marginTop": 32},
                 children=[
-                    # A) Clients Bar
-                    html.Div(
-                        style={**card_style, "flex": "1"},
-                        children=[
-                            html.Div(
-                                "AP별 Client Count (Top 10)",
-                                style={"fontWeight": "bold", "fontSize": "16px", "marginBottom": "8px"},
+                    html.Div("AP별 Client Count (Top 10)", style={"fontWeight": "bold", "marginBottom": 8}),
+                    dcc.Graph(
+                        figure=go.Figure(
+                            data=[go.Bar(
+                                x=[d["name"] for d in ap_top10],
+                                y=[d["clients"] for d in ap_top10],
+                                marker={"color": "#1890ff"},
+                            )],
+                            layout=go.Layout(
+                                xaxis={"title": "AP 이름"},
+                                yaxis={"title": "클라이언트 수"},
+                                margin={"l": 40, "r": 10, "t": 20, "b": 40},
                             ),
-                            dcc.Graph(
-                                id="overview-bar-clients",
-                                config={"displayModeBar": False},
-                                style={"height": "300px"},
-                                figure=go.Figure(),  # 빈 Figure
-                            ),
-                        ],
-                    ),
-                    # B) RX Bar
-                    html.Div(
-                        style={**card_style, "flex": "1"},
-                        children=[
-                            html.Div(
-                                "AP별 RX Bytes (Top 10)",
-                                style={"fontWeight": "bold", "fontSize": "16px", "marginBottom": "8px"},
-                            ),
-                            dcc.Graph(
-                                id="overview-bar-rx",
-                                config={"displayModeBar": False},
-                                style={"height": "300px"},
-                                figure=go.Figure(),  # 빈 Figure
-                            ),
-                        ],
-                    ),
-                    # C) TX Bar
-                    html.Div(
-                        style={**card_style, "flex": "1"},
-                        children=[
-                            html.Div(
-                                "AP별 TX Bytes (Top 10)",
-                                style={"fontWeight": "bold", "fontSize": "16px", "marginBottom": "8px"},
-                            ),
-                            dcc.Graph(
-                                id="overview-bar-tx",
-                                config={"displayModeBar": False},
-                                style={"height": "300px"},
-                                figure=go.Figure(),  # 빈 Figure
-
-                            ),
-                        ],
+                        ),
+                        config={"displayModeBar": False},
+                        style={"height": "300px"},
                     ),
                 ],
             ),
-        ],
+        ]
     )
-
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 3-B. AP 리스트 탭 콘텐츠 (Streaming Mini Chart 포함)
@@ -395,24 +377,15 @@ def render_station_tab():
 # ──────────────────────────────────────────────────────────────────────────────
 @app.callback(
     Output("tab-content", "children"),
-    [
-        Input("main-tabs", "value"),
-        Input("global-interval", "n_intervals"),
-    ]
+    Input("main-tabs", "value"),
 )
-def tab_router(tab, n_intervals):
-    if tab == "overview":
-        return render_overview_tab()
-    elif tab == "ap-list":
-        return render_ap_list_tab()
-    elif tab == "ap-detail":
-        return render_ap_detail_tab()
-    elif tab == "station":
-        return render_station_tab()
-    else:
-        return html.Div("존재하지 않는 탭입니다.")
-
-
+def tab_router(tab):
+    return {
+        "overview":  render_overview_tab,
+        "ap-list":   render_ap_list_tab,
+        "ap-detail": render_ap_detail_tab,
+        "station":   render_station_tab,
+    }.get(tab, lambda: html.Div("존재하지 않는 탭입니다."))()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 5-1. AP 클릭 시: 미니 차트 초기화 + 시작 인터벌 기록
@@ -488,176 +461,6 @@ def stream_mini_point(n_intervals, rows, stored_start):
         [0, 1],
         60
     )
-
-@app.callback(
-    [
-        Output("overview-pie", "figure"),
-        Output("overview-total-ap", "children"),
-        Output("overview-ap-status", "children"),
-        Output("overview-total-sta", "children"),
-        Output("overview-sta-top10", "children"),
-        Output("overview-bar-clients", "figure"),
-        Output("overview-bar-rx", "figure"),
-        Output("overview-bar-tx", "figure"),
-    ],
-    [Input("overview-interval", "n_intervals")],
-)
-def update_overview_graphs(n_intervals):
-    """
-    - overview-interval이 트리거될 때마다 호출
-    - current_idx = n_intervals % N_SNAP 방식으로 g_last를 동적으로 선택
-    """
-    # ───────────────────────────────────────────────────────────
-    # ① '현재 인덱스' 계산 (순환 모드)
-    # ───────────────────────────────────────────────────────────
-    current_idx = n_intervals % N_SNAP
-    g_last = dataset[current_idx]
-
-    # ───────────────────────────────────────────────────────────
-    # ② AP별 client count 집계
-    # ───────────────────────────────────────────────────────────
-    total_ap = len(AP_NAMES)
-    up_ap = total_ap
-    down_ap = 0
-
-    ap_clients = {ap: 0 for ap in AP_NAMES}
-    if ("AP", "ap_station", "Station") in g_last.edge_types:
-        ei_as = g_last[("AP", "ap_station", "Station")].edge_index
-        for k in range(ei_as.size(1)):
-            ap_clients[IDX2AP_NAME[ei_as[0, k].item()]] += 1
-    ap_top10_clients = sorted(
-        [{"name": k, "clients": v} for k, v in ap_clients.items()],
-        key=lambda x: x["clients"],
-        reverse=True,
-    )[:10]
-
-    # ───────────────────────────────────────────────────────────
-    # ③ AP별 RX/TX 집계
-    # ───────────────────────────────────────────────────────────
-    rx_idx = 1
-    tx_idx = 2
-    ap_rx = {ap: g_last["AP"].x[i, rx_idx].item() for i, ap in enumerate(AP_NAMES)}
-    ap_tx = {ap: g_last["AP"].x[i, tx_idx].item() for i, ap in enumerate(AP_NAMES)}
-    ap_top10_rx = sorted(
-        [{"name": k, "rx": v} for k, v in ap_rx.items()], key=lambda x: x["rx"], reverse=True
-    )[:10]
-    ap_top10_tx = sorted(
-        [{"name": k, "tx": v} for k, v in ap_tx.items()], key=lambda x: x["tx"], reverse=True
-    )[:10]
-
-    # ───────────────────────────────────────────────────────────
-    # ④ Station별 연결 AP 수 집계
-    # ───────────────────────────────────────────────────────────
-    sta_cnt = {ip: 0 for ip in g_last.station_ip2idx.keys()}
-    if ("AP", "ap_station", "Station") in g_last.edge_types:
-        ei_as = g_last[("AP", "ap_station", "Station")].edge_index
-        for k in range(ei_as.size(1)):
-            sta_ip = IDX2STATION_IP.get(ei_as[1, k].item())
-            if sta_ip in sta_cnt:
-                sta_cnt[sta_ip] += 1
-    sta_top10 = sorted(
-        [{"ip": k, "connections": v} for k, v in sta_cnt.items()],
-        key=lambda x: x["connections"],
-        reverse=True,
-    )[:10]
-    total_sta = g_last["Station"].x.size(0)
-
-    # ───────────────────────────────────────────────────────────
-    # ⑤ Pie 차트 생성
-    # ───────────────────────────────────────────────────────────
-    pie_fig = go.Figure(
-        data=[
-            go.Pie(
-                labels=[d["name"] for d in ap_top10_clients] + ["기타"],
-                values=[d["clients"] for d in ap_top10_clients]
-                + [sum(ap_clients.values()) - sum(d["clients"] for d in ap_top10_clients)],
-                hole=0.4,
-                marker={"colors": colors},
-                textinfo="label+percent",
-                insidetextorientation="radial",
-            )
-        ]
-    ).update_layout(margin={"l": 20, "r": 20, "t": 20, "b": 20})
-
-    # ───────────────────────────────────────────────────────────
-    # ⑥ 카드 텍스트 (Total AP/Station)
-    # ───────────────────────────────────────────────────────────
-    total_ap_str = str(total_ap)
-    ap_status_str = f"UP: {up_ap} / DOWN: {down_ap}"
-    total_sta_str = str(total_sta)
-    sta_top10_str = f"Top10 연결: {sum(d['connections'] for d in sta_top10)}"
-
-    # ───────────────────────────────────────────────────────────
-    # ⑦ Bar 차트(Clients)
-    # ───────────────────────────────────────────────────────────
-    bar_clients_fig = go.Figure(
-        data=[
-            go.Bar(
-                x=[d["name"] for d in ap_top10_clients],
-                y=[d["clients"] for d in ap_top10_clients],
-                marker={"color": colors},
-                text=[d["clients"] for d in ap_top10_clients],
-                textposition="auto",
-            )
-        ]
-    ).update_layout(
-        xaxis={"title": "AP Name"},
-        yaxis={"title": "Client 수"},
-        margin={"l": 40, "r": 20, "t": 20, "b": 40},
-    )
-
-    # ───────────────────────────────────────────────────────────
-    # ⑧ Bar 차트(RX)
-    # ───────────────────────────────────────────────────────────
-    bar_rx_fig = go.Figure(
-        data=[
-            go.Bar(
-                x=[d["name"] for d in ap_top10_rx],
-                y=[d["rx"] for d in ap_top10_rx],
-                marker={"color": colors},
-                text=[f"{d['rx']:,}" for d in ap_top10_rx],
-                textposition="auto",
-            )
-        ]
-    ).update_layout(
-        xaxis={"title": "AP Name"},
-        yaxis={"title": "RX (Bytes)"},
-        margin={"l": 40, "r": 20, "t": 20, "b": 40},
-    )
-
-    # ───────────────────────────────────────────────────────────
-    # ⑨ Bar 차트(TX)
-    # ───────────────────────────────────────────────────────────
-    bar_tx_fig = go.Figure(
-        data=[
-            go.Bar(
-                x=[d["name"] for d in ap_top10_tx],
-                y=[d["tx"] for d in ap_top10_tx],
-                marker={"color": colors},
-                text=[f"{d['tx']:,}" for d in ap_top10_tx],
-                textposition="auto",
-            )
-        ]
-    ).update_layout(
-        xaxis={"title": "AP Name"},
-        yaxis={"title": "TX (Bytes)"},
-        margin={"l": 40, "r": 20, "t": 20, "b": 40},
-    )
-
-    # ───────────────────────────────────────────────────────────
-    # ⑩ 반환 순서대로 결과 리턴
-    # ───────────────────────────────────────────────────────────
-    return (
-        pie_fig,
-        total_ap_str,
-        ap_status_str,
-        total_sta_str,
-        sta_top10_str,
-        bar_clients_fig,
-        bar_rx_fig,
-        bar_tx_fig,
-    )
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 6-A. AP 상세 탭 콜백 (90초마다 갱신)
@@ -812,4 +615,4 @@ def station_detail(rows, _):
 # 7. 앱 실행
 # ──────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    app.run(debug=True, port=8051)
+    app.run(debug=True)
