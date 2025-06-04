@@ -5,9 +5,11 @@ Heterogeneous WNMS Dashboard — Streaming Edition (Full Code with AP 상세 시
 - Overview / AP 상세 / Station 탭: 90초마다 전체 갱신
 - AP 상세 탭에 선택된 AP의 metadata 테이블 + 최근 20스냅샷에 대한 Rx/Tx 트래픽, 클라이언트 수 시계열 그래프 추가
 """
-
+# 필요
+# pandas, PyG
 import dash
 import plotly
+import pandas as pd
 import torch
 from dash import Dash, dcc, html, dash_table
 from dash.dependencies import Input, Output, State
@@ -18,7 +20,7 @@ import plotly.graph_objects as go
 # 1. 데이터 로드 & 전역 메타 정보
 # ──────────────────────────────────────────────────────────────────────────────
 PATH = (
-    "/home/nsl/WiFi_Network_ML_minjun/WiFi_Network_ML/data/"
+    "./data/"
     "hetero_graph_dataset_weekday_6to16.pt"
 )
 dataset        = torch.load(PATH, weights_only=False)  # HeteroData 객체 리스트 불러오기
