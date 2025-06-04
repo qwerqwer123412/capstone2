@@ -23,7 +23,10 @@ PATH = (
     "./data/"
     "hetero_graph_dataset_weekday_6to16.pt"
 )
-
+PATH_AGV = (
+    "./data/"
+    "agvs/"
+)
 
 dataset        = torch.load(PATH, weights_only=False)  # HeteroData 객체 리스트 불러오기
 TS_LIST        = [g.timestamp for g in dataset]       # pandas.Timestamp 리스트
