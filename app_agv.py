@@ -19,9 +19,11 @@ import plotly.graph_objects as go
 # 실제 AGV CSV들이 저장된 폴더 경로
 PATH_AGV_PREFIX = "data/agvs/"
 
-# 전역 딕셔너리: { "132": DataFrame, "133": DataFrame, ... }
-# 앱 시작 시 한 번만 모든 CSV를 읽어서 여기에 저장
-agv_df_dict = {}
+
+# 전역 딕셔너리: AGV ID → pandas.DataFrame
+agv_df_dict: dict = {}
+# 전역 통계: AGV ID → {컬럼명: (min, max), ...}
+agv_stats: dict = {}
 
 for fname in sorted(os.listdir(PATH_AGV_PREFIX)):
     if not fname.lower().endswith(".csv"):
@@ -42,6 +44,22 @@ for fname in sorted(os.listdir(PATH_AGV_PREFIX)):
 
         # 전역 dict에 저장
         agv_df_dict[agv_id] = df
+
+        # 네 가지 컬럼 이름 자동 추출
+        cols = {}
+        cols["latency"] = next((c for c in df.columns if "latency" in c), None)
+        cols["rssi"] = next((c for c in df.columns if "rssi" in c), None)
+        cols["bitrate"] = next((c for c in df.columns if "bitrate" in c), None)
+        cols["tx_bytes"] = next((c for c in df.columns if "tx_bytes" in c), None)
+
+        # 각 컬럼 전체 min/max 계산
+        stat_dict = {}
+        for key, colname in cols.items():
+            if colname and pd.api.types.is_numeric_dtype(df[colname]):
+                stat_dict[key] = (df[colname].min(), df[colname].max())
+            else:
+                stat_dict[key] = (0, 0)  # 컬럼이 없거나 수치형이 아니면 (0,0)으로 처리
+        agv_stats[agv_id] = stat_dict
 
     except Exception:
         # 읽기 오류가 발생하면 해당 AGV는 스킵
@@ -111,7 +129,7 @@ app.layout = html.Div(
                             style={"height": "600px"},
                         ),
                         html.Div(
-                            "테이블에서 AGV를 선택하면 우측 그래프가 30스텝 이전부터 실시간으로 갱신됩니다.",
+                            "최근 AGV 데이터 30 스텝이 표시됩니다",
                             style={"marginTop": "12px", "fontStyle": "italic", "color": "#666"},
                         ),
                     ],
@@ -189,6 +207,7 @@ def update_agv_table(n_intervals):
     Input("agv-interval", "n_intervals"),
     State("agv-table",   "selected_rows"),
 )
+
 def update_agv_graph(n_intervals, selected_rows):
     """
     - 매초(agv-interval 트리거) 호출
@@ -242,6 +261,19 @@ def update_agv_graph(n_intervals, selected_rows):
     bitrate_col   = [c for c in df.columns if "bitrate"   in c][0]  if [c for c in df.columns if "bitrate"   in c] else None
     tx_bytes_col  = [c for c in df.columns if "tx_bytes"  in c][0]  if [c for c in df.columns if "tx_bytes"  in c] else None
 
+    stats = agv_stats.get(agv_id, {})
+    # latency_min, latency_max = stats.get("latency", (0, 0))
+    # rssi_min, rssi_max = stats.get("rssi", (0, 0))
+    # bitrate_min, bitrate_max = stats.get("bitrate", (0, 0))
+    tx_min, tx_max = stats.get("tx_bytes", (0, 0))
+
+    latency_min, latency_max = [-10, 210]
+    rssi_min, rssi_max = [-90, -30]
+    bitrate_min, bitrate_max = [50, 300]
+    # tx_min, tx_max = [0, 200000]
+
+
+
     # 6) Figure 생성
     fig = go.Figure()
 
@@ -276,27 +308,31 @@ def update_agv_graph(n_intervals, selected_rows):
         xaxis={"title": "Time", "autorange": True},
         yaxis=dict(
             title="Latency",
+            range=[latency_min, latency_max],
             anchor="x",
             side="left",
         ),
         yaxis2=dict(
             overlaying="y",
             side="right",
-            showticklabels=False,
+            showticklabels=True,
+            range=[rssi_min, rssi_max],
             title="",  # 레이블 숨김
         ),
         yaxis3=dict(
             overlaying="y",
             side="right",
             position=0.94,
-            showticklabels=False,
+            showticklabels=True,
+            range=[bitrate_min, bitrate_max],
             title="",  # 레이블 숨김
         ),
         yaxis4=dict(
             overlaying="y",
             side="right",
             position=0.98,
-            showticklabels=False,
+            showticklabels=True,
+            range=[tx_min * 0.9, tx_max * 1.1],
             title="",  # 레이블 숨김
         ),
         legend={"orientation": "h", "y": -0.2},
