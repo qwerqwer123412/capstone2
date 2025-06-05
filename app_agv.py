@@ -60,7 +60,7 @@ app.layout = html.Div(
         html.H2("AGV 전용 실시간 대시보드 (테이블 + 30스텝 그래프)", style={"marginBottom": "20px"}),
 
         # 1초마다 호출될 인터벌
-        dcc.Interval(id="agv-interval", interval=1_000, n_intervals=0),
+        dcc.Interval(id="agv-interval", interval=200, n_intervals=0),
 
         html.Div(
             style={"display": "flex", "gap": "16px"},
@@ -103,7 +103,7 @@ app.layout = html.Div(
                                 "layout": {
                                     "margin": {"l": 40, "r": 10, "t": 40, "b": 40},
                                     "xaxis": {"title": "Time", "autorange": True},
-                                    "yaxis": {"title": "값(단위)"},
+                                    "yaxis": {"title": "Value"},
                                     "legend": {"orientation": "h", "y": -0.2},
                                 },
                             },
@@ -165,13 +165,16 @@ def update_agv_table(n_intervals):
         tx_bytes_val  = row[tx_bytes_cols[0]] if tx_bytes_cols else ""
         ap_val        = row[ap_cols[0]]       if ap_cols       else ""
 
+        def fmt(x):
+            return f"{x:.2f}" if (x is not None and pd.notna(x)) else ""
+
         rows.append({
             "agv_id":       agv_id,
             "connected_ap": ap_val,
             "rssi":         rssi_val,
             "bitrate":      bitrate_val,
-            "latency":      latency_val,
-            "tx_bytes":     tx_bytes_val,
+            "latency":      fmt(latency_val),
+            "tx_bytes":     fmt(tx_bytes_val),
         })
 
     return rows
@@ -242,36 +245,60 @@ def update_agv_graph(n_intervals, selected_rows):
     # 6) Figure 생성
     fig = go.Figure()
 
-    # Latency trace
+    # Latency trace (yaxis="y")
     if latency_col:
         fig.add_trace(go.Scatter(
             x=window_df["timestamp"], y=window_df[latency_col],
-            name="Latency", mode="lines+markers", line={"color": "#d62728"}
+            name="Latency", mode="lines+markers", line={"color": "#d62728"}, yaxis="y"
         ))
-    # RSSI trace
+    # RSSI trace (yaxis="y2")
     if rssi_col:
         fig.add_trace(go.Scatter(
             x=window_df["timestamp"], y=window_df[rssi_col],
-            name="RSSI", mode="lines+markers", line={"color": "#1f77b4"}
+            name="RSSI", mode="lines+markers", line={"color": "#1f77b4"}, yaxis="y2"
         ))
-    # Bitrate trace
+    # Bitrate trace (yaxis="y3")
     if bitrate_col:
         fig.add_trace(go.Scatter(
             x=window_df["timestamp"], y=window_df[bitrate_col],
-            name="Bitrate", mode="lines+markers", line={"color": "#2ca02c"}
+            name="Bitrate", mode="lines+markers", line={"color": "#2ca02c"}, yaxis="y3"
         ))
-    # Tx_Bytes trace
+    # Tx_Bytes trace (yaxis="y4")
     if tx_bytes_col:
         fig.add_trace(go.Scatter(
             x=window_df["timestamp"], y=window_df[tx_bytes_col],
-            name="Tx_Bytes", mode="lines+markers", line={"color": "#ff7f0e"}
+            name="Tx_Bytes", mode="lines+markers", line={"color": "#ff7f0e"}, yaxis="y4"
         ))
 
     fig.update_layout(
         title=f"AGV {agv_id} 최대 30스텝 실시간 플롯",
-        margin={"l": 40, "r": 10, "t": 40, "b": 40},
+        margin={"l": 40, "r": 40, "t": 40, "b": 40},
         xaxis={"title": "Time", "autorange": True},
-        yaxis={"title": "값(단위)"},
+        yaxis=dict(
+            title="Latency",
+            anchor="x",
+            side="left",
+        ),
+        yaxis2=dict(
+            overlaying="y",
+            side="right",
+            showticklabels=False,
+            title="",  # 레이블 숨김
+        ),
+        yaxis3=dict(
+            overlaying="y",
+            side="right",
+            position=0.94,
+            showticklabels=False,
+            title="",  # 레이블 숨김
+        ),
+        yaxis4=dict(
+            overlaying="y",
+            side="right",
+            position=0.98,
+            showticklabels=False,
+            title="",  # 레이블 숨김
+        ),
         legend={"orientation": "h", "y": -0.2},
     )
 
