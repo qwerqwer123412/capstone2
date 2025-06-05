@@ -8,8 +8,9 @@ import os
 import pandas as pd
 import dash
 from dash import Dash, dcc, html, dash_table
-from dash.dependencies import Input, Output
+from dash.dependencies import Input, Output, State
 from dash.exceptions import PreventUpdate
+import plotly.graph_objects as go
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 1. 전역 변수에 AGV CSV 모두 로드
@@ -53,18 +54,18 @@ for fname in sorted(os.listdir(PATH_AGV_PREFIX)):
 app = Dash(__name__, suppress_callback_exceptions=True)
 server = app.server
 
+
 app.layout = html.Div(
     [
-        html.H2("AGV 전용 실시간 업데이트 대시보드", style={"marginBottom": "20px"}),
+        html.H2("AGV 전용 실시간 대시보드 (테이블 + 30스텝 그래프)", style={"marginBottom": "20px"}),
 
         # 1초마다 호출될 인터벌
         dcc.Interval(id="agv-interval", interval=1_000, n_intervals=0),
 
-        # 테이블과 차트(선택된 AGV), 하지만 여기서는 테이블만 예시로 업데이트
         html.Div(
             style={"display": "flex", "gap": "16px"},
             children=[
-                # 왼쪽: AGV 목록 테이블 (매초 값 갱신)
+                # ─── 왼쪽: AGV 목록 테이블 ───────────────────────────────────────────────
                 html.Div(
                     dash_table.DataTable(
                         id="agv-table",
@@ -78,11 +79,43 @@ app.layout = html.Div(
                         ],
                         data=[],          # 콜백에서 채워 넣을 예정
                         page_size=20,
+                        row_selectable="single",
                         style_table={"overflowX": "auto", "height": "700px"},
                         style_cell={"textAlign": "center", "padding": "8px"},
                         style_header={"backgroundColor": "#f4f4f4", "fontWeight": "bold"},
                     ),
-                    style={"width": "100%"},
+                    style={"width": "40%"},
+                ),
+
+                # ─── 오른쪽: 선택된 AGV 최대 30스텝 그래프 ─────────────────────────────────
+                html.Div(
+                    children=[
+                        html.Div("선택된 AGV 최대 30스텝 지표", style={"fontWeight": "bold", "marginBottom": "8px"}),
+                        dcc.Graph(
+                            id="agv-graph",
+                            figure={
+                                "data": [
+                                    {"x": [], "y": [], "name": "Latency",  "mode": "lines+markers", "line": {"color": "#d62728"}},
+                                    {"x": [], "y": [], "name": "RSSI",     "mode": "lines+markers", "line": {"color": "#1f77b4"}},
+                                    {"x": [], "y": [], "name": "Bitrate",  "mode": "lines+markers", "line": {"color": "#2ca02c"}},
+                                    {"x": [], "y": [], "name": "Tx_Bytes","mode": "lines+markers", "line": {"color": "#ff7f0e"}},
+                                ],
+                                "layout": {
+                                    "margin": {"l": 40, "r": 10, "t": 40, "b": 40},
+                                    "xaxis": {"title": "Time", "autorange": True},
+                                    "yaxis": {"title": "값(단위)"},
+                                    "legend": {"orientation": "h", "y": -0.2},
+                                },
+                            },
+                            animate=False,  # 매초 전체 데이터를 갱신하므로 animate=False
+                            style={"height": "600px"},
+                        ),
+                        html.Div(
+                            "테이블에서 AGV를 선택하면 우측 그래프가 30스텝 이전부터 실시간으로 갱신됩니다.",
+                            style={"marginTop": "12px", "fontStyle": "italic", "color": "#666"},
+                        ),
+                    ],
+                    style={"width": "60%", "borderLeft": "1px solid #ddd", "paddingLeft": "16px"},
                 ),
             ],
         ),
@@ -143,8 +176,110 @@ def update_agv_table(n_intervals):
 
     return rows
 
+
 # ──────────────────────────────────────────────────────────────────────────────
-# 4. 앱 실행
+# 4. 콜백: 선택된 AGV의 최대 30스텝 그래프 업데이트
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.callback(
+    Output("agv-graph", "figure"),
+    Input("agv-interval", "n_intervals"),
+    State("agv-table",   "selected_rows"),
+)
+def update_agv_graph(n_intervals, selected_rows):
+    """
+    - 매초(agv-interval 트리거) 호출
+    - 사용자가 테이블에서 AGV를 클릭(selected_rows)하지 않았다면 빈 그래프 반환
+    - selected_rows가 있으면, 해당 AGV ID를 찾고 전역 DataFrame에서
+      current_idx = min(n_intervals, len(df)-1)
+      start_idx   = max(0, current_idx - 29)
+      [start_idx : current_idx+1] 구간을 잘라서 Figure로 생성
+    """
+    # 1) 아무 AGV도 선택되지 않았다면 → 빈 그래프 반환
+    if not selected_rows:
+        empty_fig = go.Figure(
+            data=[
+                {"x": [], "y": [], "name": "Latency",  "mode": "lines+markers", "line": {"color": "#d62728"}},
+                {"x": [], "y": [], "name": "RSSI",     "mode": "lines+markers", "line": {"color": "#1f77b4"}},
+                {"x": [], "y": [], "name": "Bitrate",  "mode": "lines+markers", "line": {"color": "#2ca02c"}},
+                {"x": [], "y": [], "name": "Tx_Bytes","mode": "lines+markers", "line": {"color": "#ff7f0e"}},
+            ],
+            layout=dict(
+                margin={"l": 40, "r": 10, "t": 40, "b": 40},
+                xaxis={"title": "Time", "autorange": True},
+                yaxis={"title": "값(단위)"},
+                legend={"orientation": "h", "y": -0.2},
+            ),
+        )
+        return empty_fig
+
+    # 2) 선택된 AGV ID 추출
+    sel_idx = selected_rows[0]
+    # 테이블은 update_agv_table 콜백에서 매초 갱신되므로
+    # agv_df_dict.keys()의 순서와 동일한 정렬 상태라고 가정
+    agv_ids = sorted(agv_df_dict.keys())
+    if sel_idx >= len(agv_ids):
+        raise PreventUpdate
+
+    agv_id = agv_ids[sel_idx]
+    df = agv_df_dict[agv_id]
+
+    # 3) current_idx 계산(범위를 벗어나면 마지막 인덱스 사용)
+    current_idx = n_intervals
+    if current_idx >= len(df):
+        current_idx = len(df) - 1
+
+    # 4) 최대 30스텝 이전(start_idx)부터 current_idx까지 범위를 잘라낸다.
+    start_idx = max(0, current_idx - 29)
+    window_df = df.iloc[start_idx : current_idx + 1]
+
+    # 5) 각 컬럼 이름 자동 추출
+    latency_col   = [c for c in df.columns if "latency"   in c][0]  if [c for c in df.columns if "latency"   in c] else None
+    rssi_col      = [c for c in df.columns if "rssi"      in c][0]  if [c for c in df.columns if "rssi"      in c] else None
+    bitrate_col   = [c for c in df.columns if "bitrate"   in c][0]  if [c for c in df.columns if "bitrate"   in c] else None
+    tx_bytes_col  = [c for c in df.columns if "tx_bytes"  in c][0]  if [c for c in df.columns if "tx_bytes"  in c] else None
+
+    # 6) Figure 생성
+    fig = go.Figure()
+
+    # Latency trace
+    if latency_col:
+        fig.add_trace(go.Scatter(
+            x=window_df["timestamp"], y=window_df[latency_col],
+            name="Latency", mode="lines+markers", line={"color": "#d62728"}
+        ))
+    # RSSI trace
+    if rssi_col:
+        fig.add_trace(go.Scatter(
+            x=window_df["timestamp"], y=window_df[rssi_col],
+            name="RSSI", mode="lines+markers", line={"color": "#1f77b4"}
+        ))
+    # Bitrate trace
+    if bitrate_col:
+        fig.add_trace(go.Scatter(
+            x=window_df["timestamp"], y=window_df[bitrate_col],
+            name="Bitrate", mode="lines+markers", line={"color": "#2ca02c"}
+        ))
+    # Tx_Bytes trace
+    if tx_bytes_col:
+        fig.add_trace(go.Scatter(
+            x=window_df["timestamp"], y=window_df[tx_bytes_col],
+            name="Tx_Bytes", mode="lines+markers", line={"color": "#ff7f0e"}
+        ))
+
+    fig.update_layout(
+        title=f"AGV {agv_id} 최대 30스텝 실시간 플롯",
+        margin={"l": 40, "r": 10, "t": 40, "b": 40},
+        xaxis={"title": "Time", "autorange": True},
+        yaxis={"title": "값(단위)"},
+        legend={"orientation": "h", "y": -0.2},
+    )
+
+    return fig
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 5. 앱 실행
 # ──────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
