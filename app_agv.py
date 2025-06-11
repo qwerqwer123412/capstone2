@@ -17,7 +17,7 @@ import plotly.graph_objects as go
 # ──────────────────────────────────────────────────────────────────────────────
 
 # 실제 AGV CSV들이 저장된 폴더 경로
-PATH_AGV_PREFIX = "data/agvs/"
+PATH_AGV_PREFIX = "data/agv_pred/"
 
 
 # 전역 딕셔너리: AGV ID → pandas.DataFrame
@@ -94,13 +94,19 @@ app.layout = html.Div(
                             {"name": "Bitrate",       "id": "bitrate"},
                             {"name": "Latency",       "id": "latency"},
                             {"name": "Tx_Bytes",      "id": "tx_bytes"},
+                            {"name": "Pred",          "id": "y_pred"},
                         ],
+                        hidden_columns=["y_pred"],
                         data=[],          # 콜백에서 채워 넣을 예정
                         page_size=20,
                         row_selectable="single",
                         style_table={"overflowX": "auto", "height": "700px"},
                         style_cell={"textAlign": "center", "padding": "8px"},
                         style_header={"backgroundColor": "#f4f4f4", "fontWeight": "bold"},
+                        style_data_conditional=[{
+                            "if": {"filter_query": "{y_pred} = 1"},
+                            "backgroundColor": "#ffcccc",
+                        }],
                     ),
                     style={"width": "40%"},
                 ),
@@ -176,12 +182,14 @@ def update_agv_table(n_intervals):
         bitrate_cols  = [c for c in df.columns if "bitrate"   in c]
         tx_bytes_cols = [c for c in df.columns if "tx_bytes"  in c]
         ap_cols       = [c for c in df.columns if "ap_number" in c]
+        pred_cols     = [c for c in df.columns if "pred"      in c]
 
         latency_val   = row[latency_cols[0]]  if latency_cols  else ""
         rssi_val      = row[rssi_cols[0]]     if rssi_cols     else ""
         bitrate_val   = row[bitrate_cols[0]]  if bitrate_cols  else ""
         tx_bytes_val  = row[tx_bytes_cols[0]] if tx_bytes_cols else ""
         ap_val        = row[ap_cols[0]]       if ap_cols       else ""
+        pred_val      = row[pred_cols[0]]     if pred_cols     else ""
 
         def fmt(x):
             return f"{x:.2f}" if (x is not None and pd.notna(x)) else ""
@@ -193,6 +201,7 @@ def update_agv_table(n_intervals):
             "bitrate":      bitrate_val,
             "latency":      fmt(latency_val),
             "tx_bytes":     fmt(tx_bytes_val),
+            "y_pred":       pred_val,
         })
 
     return rows
@@ -260,6 +269,7 @@ def update_agv_graph(n_intervals, selected_rows):
     rssi_col      = [c for c in df.columns if "rssi"      in c][0]  if [c for c in df.columns if "rssi"      in c] else None
     bitrate_col   = [c for c in df.columns if "bitrate"   in c][0]  if [c for c in df.columns if "bitrate"   in c] else None
     tx_bytes_col  = [c for c in df.columns if "tx_bytes"  in c][0]  if [c for c in df.columns if "tx_bytes"  in c] else None
+    y_pred_col      = [c for c in df.columns if "y_pred"    in c][0]  if [c for c in df.columns if "y_pred"    in c] else None
 
     stats = agv_stats.get(agv_id, {})
     # latency_min, latency_max = stats.get("latency", (0, 0))
@@ -272,6 +282,9 @@ def update_agv_graph(n_intervals, selected_rows):
     bitrate_min, bitrate_max = [50, 300]
     # tx_min, tx_max = [0, 200000]
 
+    # y_pred_now = None
+    # if "y_pred" in window_df.columns:
+    #     y_pred_now = int(window_df["y_pred"].iloc[-1])
 
 
     # 6) Figure 생성
@@ -301,6 +314,28 @@ def update_agv_graph(n_intervals, selected_rows):
             x=window_df["timestamp"], y=window_df[tx_bytes_col],
             name="Tx_Bytes", mode="lines+markers", line={"color": "#ff7f0e"}, yaxis="y4"
         ))
+
+    shapes = []
+    if y_pred_col:
+        times = window_df["timestamp"].tolist()
+        preds = window_df[y_pred_col].tolist()
+        for i, val in enumerate(preds):
+            if val == 1:
+                t0 = times[i]
+                # 다음 타임스탬프이거나, 없다면 t0 + 1초
+                t1 = times[i + 1] if i + 1 < len(times) else t0 + pd.Timedelta(seconds=1)
+                shapes.append(dict(
+                    type="rect",
+                    xref="x",
+                    yref="paper",
+                    x0=t0,
+                    x1=t1,
+                    y0=0,
+                    y1=1,
+                    fillcolor="rgba(255, 0, 0, 0.2)",
+                    line_width=0,
+                    layer="below"
+                ))
 
     fig.update_layout(
         title=f"AGV {agv_id} 최대 30스텝 실시간 플롯",
@@ -336,6 +371,7 @@ def update_agv_graph(n_intervals, selected_rows):
             title="",  # 레이블 숨김
         ),
         legend={"orientation": "h", "y": -0.2},
+        shapes=shapes,
     )
 
     return fig
@@ -346,4 +382,8 @@ def update_agv_graph(n_intervals, selected_rows):
 # ──────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(
+        debug=False,
+        host="0.0.0.0",
+        port=8051,
+    )
